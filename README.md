@@ -2,6 +2,19 @@
 
 A Streamlit web app that scans an uploaded video for NSFW (Not Safe For Work) content using a three-stage moderation pipeline: scene detection, a fast image-classifier pre-filter, and a final vision-language-model (VLM) verification pass on only the flagged frames.
 
+## Pipeline overview
+
+```mermaid
+flowchart TD
+    A[Upload video] --> B["Step 1 — PySceneDetect ContentDetector\nsplit video into scenes"]
+    B --> C["Extract the middle frame\nof each scene"]
+    C --> D["Step 2 — Pre-filter\nNudeNet + Falconsai/nsfw_image_detection"]
+    D -->|Neither model triggers| E["Discarded\n(treated as safe)"]
+    D -->|Either model passes its threshold| F["Step 3 — VLM verification\nvia OpenRouter"]
+    F -->|is_nsfw = false| E
+    F -->|is_nsfw = true| G["Confirmed NSFW frame"]
+```
+
 ## How it works
 
 The pipeline is designed to minimize false positives and avoid sending every frame to an expensive VLM call.
@@ -9,10 +22,12 @@ The pipeline is designed to minimize false positives and avoid sending every fra
 **Step 1 — Scene detection & frame extraction**
 Uses [PySceneDetect](https://www.scenedetect.com/) (`ContentDetector`) to split the video into scenes, then extracts a single representative frame from the middle of each scene (never the very first or last frame of a scene).
 
+`ContentDetector` works by converting each decoded frame to the HSV color space and measuring a weighted difference in hue, saturation, and luminance (plus an optional edge-detection term) against the previous frame. When that combined content-change score crosses the configured `threshold`, a scene cut is registered at that point; the `min_scene_len` parameter then discards any scene shorter than the given number of frames so that noise or very brief flashes don't get counted as real scenes. This detector targets hard cuts between shots rather than slow fades, which fits typical edited video well. Because a hard cut can leave the frame right at a scene boundary blurry or transitional, the app deliberately samples the *middle* frame of each detected scene as the most visually representative one to send downstream.
+
 **Step 2 — Pre-filter with two lightweight classifiers**
-Every extracted frame is scored by:
-- [NudeNet](https://github.com/notAI-tech/NudeNet) — checks for a set of explicit-nudity labels (exposed breast/genitalia/buttocks/anus)
-- [Falconsai/nsfw_image_detection](https://huggingface.co/Falconsai/nsfw_image_detection) — a HuggingFace image classifier
+Every extracted frame is scored by two independent, fast image classifiers before anything is sent to the (slower, costlier) VLM:
+- **[NudeNet](https://github.com/notAI-tech/NudeNet)** — an object-detection model that locates specific body regions in an image and returns bounding boxes with class labels (e.g. exposed breast/genitalia/buttocks/anus) and confidence scores. This app only looks at the explicit "exposed" classes and keeps the highest confidence score found in each frame.
+- **[Falconsai/nsfw_image_detection](https://huggingface.co/Falconsai/nsfw_image_detection)** — a HuggingFace image-classification model (a fine-tuned Vision Transformer) that outputs a simple "normal" vs. "nsfw" label with a confidence score for the whole image, used here as a second, independent signal that can catch cases NudeNet's region-based approach might miss.
 
 A frame is flagged if **either** model's score passes its configured threshold (OR logic), so the filter errs on the side of catching more candidates.
 
