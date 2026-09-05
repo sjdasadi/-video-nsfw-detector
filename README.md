@@ -34,6 +34,20 @@ A frame is flagged if **either** model's score passes its configured threshold (
 **Step 3 — VLM confirmation (via OpenRouter)**
 Only frames flagged in Step 2 are sent to a vision-language model through the [OpenRouter](https://openrouter.ai/) API, using a strict system prompt that asks for a structured JSON verdict (`is_nsfw`, `confidence`, `categories`, `reason`). This step filters out the false positives from Step 2 (e.g. swimwear, ordinary skin, medical/artistic context).
 
+## PySceneDetect description
+
+[PySceneDetect](https://www.scenedetect.com/) is an open-source Python library and command-line tool for detecting scene changes (cuts, fades, transitions) in video, and for splitting video into per-scene clips. It's commonly used as a pre-processing step in video-analysis pipelines — like this app — where it would be wasteful to run a heavy model on every single frame of a video.
+
+The library ships several interchangeable detection algorithms, exposed through the same `SceneManager` API:
+
+- **`ContentDetector`** (used in this app) — detects fast cuts by comparing weighted differences in hue, saturation, and luminance between adjacent frames in the HSV color space.
+- **`AdaptiveDetector`** — builds on `ContentDetector` but uses a rolling average of nearby scores instead of a fixed threshold, which helps reduce false cuts caused by camera panning or motion.
+- **`ThresholdDetector`** — the more traditional approach (similar to `ffmpeg`'s blackframe filter), which watches average frame brightness and is mainly suited to detecting fades to/from black rather than hard cuts.
+- **`HistogramDetector`** — compares the Y-channel histograms of consecutive frames and flags a cut when they differ beyond a threshold.
+- **`HashDetector`** — uses perceptual hashing to measure frame-to-frame similarity.
+
+This project uses `ContentDetector` because the goal is to catch ordinary hard cuts between shots (the typical case in most video content) rather than slow fades, and because its `threshold` and `min_scene_len` parameters are simple to expose directly as sliders in the app's sidebar. Once PySceneDetect returns the list of scene boundaries, the app doesn't process the whole video frame-by-frame — it only pulls one representative frame per scene, which is what keeps the downstream NudeNet/Falconsai/VLM stages fast and cheap.
+
 ## Features
 
 - Interactive Streamlit UI with adjustable thresholds for every stage
